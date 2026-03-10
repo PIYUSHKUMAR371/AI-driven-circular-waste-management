@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>AI driven circular waste management</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+
+<style>
+#map{
+height:600px;
+width:100%;
+}
+</style>
+
+</head>
+
+<body>
+
+<h2>Smart Waste Routing Map</h2>
+
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<script>
+
+var map = L.map('map').setView([28.6139,77.2090],12);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+maxZoom:19
+}).addTo(map);
+
+var marker = L.marker([28.6139,77.2090]).addTo(map);
+
+marker.bindPopup("Garbage Bin Location");
+
+</script>
+
+</body>
+</html>
