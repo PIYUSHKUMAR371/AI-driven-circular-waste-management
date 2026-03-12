@@ -260,6 +260,8 @@ Open the map endpoint:
 http://127.0.0.1:8000/map
 
 This will show the waste bin visualization map.
+sorry , it seems that the map function still needs a little bit of work, and i can't do it now due to my exams, but i will do it before the final submittion 
+But I can say for sure that my other functions work perfectly, they could use a good fronend tho 
 
 🌱 Future Improvements
 
