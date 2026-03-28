@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI-Driven Waste Management</title>
+    
+    <!-- External CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.css" />
+
+    <style>
+        :root {
+            --bg-light: #f4f7f6;
+            --primary-blue: #2c3e50;
+            --status-bar: #ffffff;
+        }
+
+        body { margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+
+        #map { height: 85vh; width: 100%; z-index: 1; }
+
+        /* Statistics Header Styling */
+        #stats-panel {
+            height: 15vh;
+            background: var(--status-bar);
+            display: flex;
+            align-items: center;
+            justify-content: space-around;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            padding: 0 20px;
+            box-sizing: border-box;
+        }
+
+        .stat-item { text-align: center; }
+        .stat-value { 
+            display: block; 
+            font-size: 1.5rem; 
+            font-weight: bold; 
+            color: var(--primary-blue); 
+        }
+        .stat-label { font-size: 0.8rem; color: #666; text-transform: uppercase; }
+    </style>
+</head>
+<body>
+
+<div id="stats-panel">
+    <div class="stat-item">
+        <span class="stat-label">Total Bins</span>
+        <span id="total" class="stat-value">0</span>
+    </div>
+    <div class="stat-item">
+        <span class="stat-label">Est. Travel Time</span>
+        <span id="eta" class="stat-value">--</span> <small>mins</small>
+    </div>
+    <div class="stat-item">
+        <span class="stat-label">Carbon Saved</span>
+        <span id="carbon" class="stat-value">--</span> <small>kg</small>
+    </div>
+    <div class="stat-item">
+        <span class="stat-label">Your Rewards</span>
+        <span id="points" class="stat-value">0</span> <small>pts</small>
+    </div>
+</div>
+
+<div id="map"></div>
+
+<!-- Leaflet & Routing Scripts -->
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-routing-machine/dist/leaflet-routing-machine.js"></script>
+
+<script>
+    /* ==========================================
+       1. CONFIGURATION & CONSTANTS
+       ========================================== */
+    const CONFIG = {
+        depot: [28.6130, 77.2080],
+        landfill: [28.6500, 77.2300],
+        defaultZoom: 12,
+        truckSpeedKmh: 30,
+        updateInterval: 15000 // 15 seconds
+    };
+
+    let binsData = {};
+    let routingControl = null;
+    let truckMarker = null;
+    let truckPathLine = null;
+    let truckCoords = [];
+
+    /* ==========================================
+       2. MAP INITIALIZATION
+       ========================================== */
+    const map = L.map('map').setView(CONFIG.depot, CONFIG.defaultZoom);
+
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Add static markers for Depot and Landfill
+    L.marker(CONFIG.depot).addTo(map).bindPopup("<b>Main Depot</b><br>Truck Start Point");
+    L.marker(CONFIG.landfill).addTo(map).bindPopup("<b>Landfill Site</b><br>Disposal Point");
+
+    /* ==========================================
+       3. DATA FETCHING & BIN RENDERING
+       ========================================== */
+    async function initSystem() {
+        try {
+            const response = await fetch("/bins");
+            const data = await response.json();
+            binsData = data.bins; // Expecting { "bin_1": {lat, lon, fill_level}, ... }
+
+            renderBins();
+            refreshRoute(); // Initial route load
+        } catch (err) {
+            console.error("Critical: Could not load bin data", err);
+        }
+    }
+
+    function renderBins() {
+
+    //  this is to prevent markers from stacking on top of each other
+    map.eachLayer((layer) => { if (layer instanceof L.CircleMarker) map.removeLayer(layer); });
+
+        const binIds = Object.keys(binsData);
+        document.getElementById("total").innerText = binIds.length;
+
+        binIds.forEach(id => {
+            const bin = binsData[id];
+            
+            // Logic: Change color based on fullness
+            const color = bin.fill_level > 80 ? "red" : (bin.fill_level > 50 ? "orange" : "green");
+
+            L.circleMarker([bin.latitude, bin.longitude], {
+                radius: 8,
+                fillColor: color,
+                color: "#fff",
+                weight: 2,
+                fillOpacity: 0.8
+            })
+            .addTo(map)
+            .bindPopup(`<b>Bin ID: ${id}</b><br>Fill: ${bin.fill_level}%<br>Last Updated: ${bin.last_updated}`);
+        });
+    }
+
+    /* ==========================================
+       4. ROUTE OPTIMIZATION LOGIC
+       ========================================== */
+    async function refreshRoute() {
+        try {
+            const response = await fetch("/optimize-route");
+            const data = await response.json();
+
+            if (!data.optimized_route) return;
+
+            // Update UI Stats
+            document.getElementById("carbon").innerText = data.carbon_saved_kg;
+            const travelTime = (data.optimized_distance_km / CONFIG.truckSpeedKmh) * 60;
+            document.getElementById("eta").innerText = travelTime.toFixed(1);
+
+            // Construct waypoint array: [Depot -> Bin A -> Bin B -> Landfill]
+            const waypoints = [L.latLng(CONFIG.depot)];
+            
+            data.optimized_route.forEach(bin_id => {
+                const bin = binsData[bin_id];
+                if (bin) waypoints.push(L.latLng(bin.latitude, bin.longitude));
+            });
+
+            waypoints.push(L.latLng(CONFIG.landfill));
+
+            drawRoute(waypoints);
+
+        } catch (err) {
+            console.warn("Route update failed:", err);
+        }
+    }
+
+    function drawRoute(waypoints) {
+        // If a route already exists, remove it before drawing the new one
+        if (routingControl) {
+            map.removeControl(routingControl);
+        }
+
+        routingControl = L.Routing.control({
+            waypoints: waypoints,
+            routeWhileDragging: false,
+            addWaypoints: false,
+            createMarker: () => null, // Hides default blue waypoint markers
+            lineOptions: {
+                styles: [{ color: '#3498db', weight: 4, opacity: 0.7 }]
+            }
+        }).addTo(map);
+    }
+
+    /* ==========================================
+       5. LIVE TRUCK TRACKING (GPS)
+       ========================================== */
+    if ("geolocation" in navigator) {
+        navigator.geolocation.watchPosition(
+            (pos) => {
+                const { latitude, longitude } = pos.coords;
+                const currentPos = [latitude, longitude];
+                
+                truckCoords.push(currentPos);
+
+                // Update or Create Truck Marker
+                if (truckMarker) {
+                    truckMarker.setLatLng(currentPos);
+                } else {
+                    truckMarker = L.marker(currentPos).addTo(map).bindPopup("<b>Live Truck</b>");
+                }
+
+                // Update or Create Breadcrumb Path
+                if (truckPathLine) {
+                    truckPathLine.setLatLngs(truckCoords);
+                } else {
+                    truckPathLine = L.polyline(truckCoords, { color: 'blue', dashArray: '5, 10' }).addTo(map);
+                }
+            },
+            (err) => console.log("Geolocation error:", err),
+            { enableHighAccuracy: true }
+        );
+    }
+
+    /* ==========================================
+       6. LIFECYCLE INITIALIZATION
+       ========================================== */
+    initSystem();
+    
+    // Auto-refresh the optimized route every 15 seconds
+    setInterval(refreshRoute, CONFIG.updateInterval);
+
+</script>
+
+</body>
+</html>
